@@ -1,0 +1,1125 @@
+import React, { useState, useEffect } from 'react';
+import { Hammer, RotateCcw, Trophy, Camera, Play, Eraser, Square, Settings, XCircle, Bomb, Star, Archive as ArchiveIcon, BarChart2, Edit2, Check, Skull, Aperture, Ghost, Crown, Dices, Target, Plus, HelpCircle, Columns, Rows, ArrowLeftRight, ArrowUpDown, Minimize, Minimize2, RefreshCw } from 'lucide-react';
+
+const CREATE_POWERS_OF_TWO = Array.from({ length: 24 }, (_, i) => Math.pow(2, i + 1));
+const ULTIMATE_WIN_TILE = 1099511627776;
+
+const CREATE_ROWS = 10;
+const CREATE_COLS = 7;
+const LIFELINES_AND_TOOLS = [
+  'play', 'gameover', 'miss', 'lifeline', 'bomb', 'star', 
+  'darkroom', 'danhausen', 'bombo', 'bombrow', 'changelayout', 
+  'expandwidth', 'expandlength', 'decreasewidth', 'decreaselength', 
+  'randomtile', 'luckywheel', 
+  'extradart', 'randomqueue', -1
+];
+
+const TOOL_INFO = {
+  'play': { name: "Play Block", desc: "Core tile. You must have at least one to save." },
+  'gameover': { name: "Game Over", desc: "Core tile. You must have at least one to save." },
+  'miss': { name: "Miss (X)", desc: "A dead block. It takes up space and cannot be merged." },
+  'lifeline': { name: "Hammer", desc: "Smash any single targeted tile to destroy it." },
+  'bomb': { name: "Bomb", desc: "Destroy a 3x3 area of tiles around your target." },
+  'star': { name: "Star", desc: "Destroy ALL tiles on the board matching your targeted number." },
+  'darkroom': { name: "Dark Room", desc: "You awake in a dark room... What will you do?" },
+  'danhausen': { name: "Danhausen", desc: "Curses the board! All numbers become 13 for 10 seconds!" },
+  'bombo': { name: "Bombo", desc: "Clears the entire column of your targeted cell!" },
+  'bombrow': { name: "Bombrow", desc: "Clears the entire row of your targeted cell!" },
+  'changelayout': { name: "Change Layout", desc: "Sends you to the Archive to swap your active layout mid-game!" },
+  'expandwidth': { name: "Expand Width", desc: "Increases the width of the play board by 1 column." },
+  'expandlength': { name: "Expand Length", desc: "Increases the length of the play board by 1 row." },
+  'decreasewidth': { name: "Decrease Width", desc: "Shrinks the board width! Edge tiles will be destroyed!" },
+  'decreaselength': { name: "Decrease Length", desc: "Shrinks the board length! Edge tiles will be destroyed!" },
+  'randomtile': { name: "Random Drop", desc: "Transforms into a completely random number upon landing." },
+  'luckywheel': { name: "Lucky Wheel", desc: "Spins and instantly transforms into a random item in your Drop Zone." },
+  'extradart': { name: "Extra Dart", desc: "Unlocks a 4th space in your Drop Zone for this turn only!" },
+  'randomqueue': { name: "Random (Queue)", desc: "Instantly transforms into a random number inside the Drop Zone." },
+  0: { name: "Empty Slot", desc: "A blank space on the board." },
+  '-1': { name: "Eraser", desc: "Removes the cell completely to create custom grid shapes." }
+};
+
+export default function App() {
+  const [appMode, setAppMode] = useState('play'); 
+  
+  // --- PERSISTENT STATE ---
+  const [archive, setArchive] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('dartsmerge_archive')) || []; } 
+    catch { return []; }
+  });
+  
+  const [stats, setStats] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('dartsmerge_stats')) || { topTiles: [], topScores: [] }; } 
+    catch { return { topTiles: [], topScores: [] }; }
+  });
+
+  useEffect(() => { localStorage.setItem('dartsmerge_archive', JSON.stringify(archive)); }, [archive]);
+  useEffect(() => { localStorage.setItem('dartsmerge_stats', JSON.stringify(stats)); }, [stats]);
+
+  const [activeLayoutId, setActiveLayoutId] = useState(null);
+
+  // --- PLAY MODE STATE ---
+  const [grid, setGrid] = useState(Array(5).fill().map(() => Array(5).fill(0)));
+  const [zubiScore, setZubiScore] = useState(0);
+  const [daddyScore, setDaddyScore] = useState(0);
+  const [highestTileThisGame, setHighestTileThisGame] = useState(0);
+  const [gameOver, setGameOver] = useState(false);
+  const [gameWon, setGameWon] = useState(false);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [swapLayoutMode, setSwapLayoutMode] = useState(false);
+  
+  // Daddy Challenges & Achievements
+  const [daddyTarget, setDaddyTarget] = useState(null);
+  const [sessionHits, setSessionHits] = useState(new Set());
+  const [daddyBonusAwarded, setDaddyBonusAwarded] = useState(false);
+  const [showDaddyAchievement, setShowDaddyAchievement] = useState(false);
+
+  // Curses & Modals
+  const [isCursed, setIsCursed] = useState(false);
+  const [showDanhausenPopup, setShowDanhausenPopup] = useState(false);
+  const [showDarkRoom, setShowDarkRoom] = useState(false);
+
+  // Drop Zone mechanics
+  const [dropZone, setDropZone] = useState([]);
+  const [maxDropZoneSize, setMaxDropZoneSize] = useState(3);
+  const [dropZoneLocked, setDropZoneLocked] = useState(false);
+
+  // --- CREATE MODE STATE ---
+  const [createGrid, setCreateGrid] = useState(() => {
+    const initial = Array(CREATE_ROWS).fill().map(() => Array(CREATE_COLS).fill(0));
+    initial[0][3] = 'play'; 
+    initial[CREATE_ROWS - 1][3] = 'gameover'; 
+    return initial;
+  });
+  const [createSelectedTile, setCreateSelectedTile] = useState(2);
+  const [screenshotMode, setScreenshotMode] = useState(false);
+
+  const activeLayoutData = archive.find(l => l.id === activeLayoutId);
+
+  // --- HELPERS ---
+  const getPlayableTiles = (layoutGrid) => {
+    const tiles = new Set();
+    layoutGrid.flat().forEach(val => {
+      if (val !== 0 && val !== -1 && val !== 'gameover') tiles.add(val);
+    });
+    return Array.from(tiles);
+  };
+
+  const pickDaddyTarget = (playableTiles) => {
+    if (playableTiles.length === 0) return null;
+    return playableTiles[Math.floor(Math.random() * playableTiles.length)];
+  };
+
+  // Initialize Daddy Challenge when layout changes
+  useEffect(() => {
+    if (activeLayoutData && appMode === 'play') {
+      const pt = getPlayableTiles(activeLayoutData.grid);
+      setDaddyTarget(pickDaddyTarget(pt));
+      setSessionHits(new Set());
+      setDaddyBonusAwarded(false);
+    }
+  }, [activeLayoutId, appMode]);
+
+  const getTileStyles = (val) => {
+    if (val === -1) return { className: "opacity-0 cursor-default shadow-none border-none pointer-events-none bg-transparent" };
+    if (val === 0) return { className: "bg-gray-800 border-gray-700 shadow-inner" };
+    if (val === 'play') return { className: "bg-blue-600 text-white border-blue-800 shadow-md" };
+    if (val === 'gameover') return { className: "bg-red-800 text-red-200 border-red-950 shadow-md" };
+    if (val === 'miss') return { className: "bg-zinc-800 text-zinc-500 border-zinc-950 shadow-inner" };
+    if (val === 'lifeline') return { className: "bg-red-600 text-white border-red-800 shadow-[0_0_15px_rgba(220,38,38,0.5)]" };
+    if (val === 'bomb') return { className: "bg-zinc-950 text-red-500 border-red-900 shadow-[0_0_15px_rgba(220,38,38,0.5)]" };
+    if (val === 'star') return { className: "bg-yellow-600 text-yellow-100 border-yellow-800 shadow-[0_0_15px_rgba(202,138,4,0.5)]" };
+    if (val === 'darkroom') return { className: "bg-purple-950 text-purple-400 border-purple-900 shadow-[0_0_15px_rgba(147,51,234,0.3)]" };
+    if (val === 'danhausen') return { className: "bg-green-950 text-green-400 border-green-900 shadow-[0_0_15px_rgba(34,197,94,0.3)]" };
+    if (val === 'bombo') return { className: "bg-cyan-700 text-cyan-100 border-cyan-900 shadow-[0_0_15px_rgba(6,182,212,0.5)]" };
+    if (val === 'bombrow') return { className: "bg-teal-700 text-teal-100 border-teal-900 shadow-[0_0_15px_rgba(20,184,166,0.5)]" };
+    if (val === 'changelayout') return { className: "bg-orange-600 text-orange-100 border-orange-800 shadow-[0_0_15px_rgba(234,88,12,0.5)]" };
+    if (val === 'expandwidth') return { className: "bg-indigo-600 text-indigo-100 border-indigo-800 shadow-[0_0_15px_rgba(79,70,229,0.5)]" };
+    if (val === 'expandlength') return { className: "bg-violet-600 text-violet-100 border-violet-800 shadow-[0_0_15px_rgba(124,58,237,0.5)]" };
+    if (val === 'decreasewidth') return { className: "bg-rose-700 text-rose-100 border-rose-900 shadow-[0_0_15px_rgba(225,29,72,0.5)]" };
+    if (val === 'decreaselength') return { className: "bg-pink-700 text-pink-100 border-pink-900 shadow-[0_0_15px_rgba(190,24,93,0.5)]" };
+    if (val === 'randomtile') return { className: "bg-fuchsia-600 text-fuchsia-100 border-fuchsia-800 shadow-[0_0_15px_rgba(192,38,211,0.5)]" };
+    if (val === 'luckywheel') return { className: "bg-amber-500 text-amber-950 border-amber-700 shadow-[0_0_15px_rgba(245,158,11,0.5)]" };
+    if (val === 'extradart') return { className: "bg-pink-600 text-pink-100 border-pink-800 shadow-[0_0_15px_rgba(219,39,119,0.5)]" };
+    if (val === 'randomqueue') return { className: "bg-lime-600 text-lime-100 border-lime-800 shadow-[0_0_15px_rgba(101,163,13,0.5)]" };
+    
+    if (isCursed && typeof val === 'number' && val > 0) {
+      return { 
+        className: "text-green-500 font-black shadow-[0_0_10px_rgba(34,197,94,0.8)] border-b-4",
+        style: { backgroundColor: `#052e16`, borderColor: `#022c22` } 
+      };
+    }
+
+    if (typeof val === 'number' && val > 0) {
+      const idx = Math.max(0, Math.log2(val) - 1);
+      const hue = (idx * 137.5) % 360; 
+      return { 
+        className: "text-white font-black shadow-md",
+        style: { backgroundColor: `hsl(${hue}, 80%, 45%)`, borderColor: `hsl(${hue}, 90%, 25%)` }
+      };
+    }
+    return { className: "bg-teal-600 text-white border-teal-800" };
+  };
+
+  const getFontSizeClass = (val) => {
+    if (isCursed && typeof val === 'number') return 'text-[clamp(0.7rem,3vw,1.5rem)]'; 
+    if (typeof val !== 'number') return '';
+    const len = val.toString().length;
+    if (len <= 2) return 'text-[clamp(0.8rem,3.5vw,2rem)]';
+    if (len === 3) return 'text-[clamp(0.7rem,3vw,1.5rem)] tracking-tight';
+    if (len === 4) return 'text-[clamp(0.6rem,2.5vw,1.2rem)] tracking-tighter';
+    if (len === 5) return 'text-[clamp(0.5rem,2vw,1rem)] tracking-tighter'; 
+    if (len === 6) return 'text-[clamp(0.4rem,1.5vw,0.8rem)] tracking-tighter'; 
+    if (len === 7) return 'text-[clamp(0.3rem,1vw,0.6rem)] tracking-tighter'; 
+    if (len <= 9) return 'text-[clamp(0.2rem,0.8vw,0.4rem)] tracking-tighter';
+    return 'text-[clamp(0.15rem,0.6vw,0.3rem)] tracking-tighter';
+  };
+
+  const renderTileContent = (val) => {
+    if (val === 0 || val === -1) return '';
+    if (val === 'play') return <Play className="w-1/2 h-1/2 ml-1" fill="currentColor" />;
+    if (val === 'gameover') return <Skull className="w-1/2 h-1/2" />;
+    if (val === 'miss') return <XCircle className="w-1/2 h-1/2 opacity-50" />;
+    if (val === 'lifeline') return <Hammer className="w-1/2 h-1/2" />;
+    if (val === 'bomb') return <Bomb className="w-1/2 h-1/2" />;
+    if (val === 'star') return <Star className="w-1/2 h-1/2" />;
+    if (val === 'darkroom') return <Aperture className="w-1/2 h-1/2" />;
+    if (val === 'danhausen') return <Ghost className="w-1/2 h-1/2" />;
+    if (val === 'bombo') return <Columns className="w-1/2 h-1/2" />;
+    if (val === 'bombrow') return <Rows className="w-1/2 h-1/2" />;
+    if (val === 'changelayout') return <RefreshCw className="w-1/2 h-1/2" />;
+    if (val === 'expandwidth') return <ArrowLeftRight className="w-1/2 h-1/2" />;
+    if (val === 'expandlength') return <ArrowUpDown className="w-1/2 h-1/2" />;
+    if (val === 'decreasewidth') return <Minimize2 className="w-1/2 h-1/2" />;
+    if (val === 'decreaselength') return <Minimize className="w-1/2 h-1/2" />;
+    if (val === 'randomtile') return <Dices className="w-1/2 h-1/2" />;
+    if (val === 'luckywheel') return <Target className="w-1/2 h-1/2" />;
+    if (val === 'extradart') return <Plus className="w-1/2 h-1/2" />;
+    if (val === 'randomqueue') return <HelpCircle className="w-1/2 h-1/2" />;
+    
+    const displayVal = (isCursed && typeof val === 'number') ? 13 : val;
+    return <span className={`${getFontSizeClass(displayVal)} leading-none whitespace-nowrap w-full text-center px-[2%]`}>{displayVal}</span>;
+  };
+
+  // --- GAME LOGIC ---
+  const checkMerge = (currentGrid, r, c) => {
+    const val = currentGrid[r][c];
+    if (val === 0 || val === 'miss') return { grid: currentGrid, merged: false }; 
+
+    const connected = [];
+    const visited = new Set();
+    const queue = [[r, c]];
+    visited.add(`${r},${c}`);
+
+    while (queue.length > 0) {
+      const [currR, currC] = queue.shift();
+      connected.push([currR, currC]);
+
+      const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+      for (const [dr, dc] of dirs) {
+        const nr = currR + dr;
+        const nc = currC + dc;
+        if (nr >= 0 && nr < currentGrid.length && nc >= 0 && nc < currentGrid[0].length) {
+          if (currentGrid[nr][nc] === val && !visited.has(`${nr},${nc}`)) {
+            visited.add(`${nr},${nc}`);
+            queue.push([nr, nc]);
+          }
+        }
+      }
+    }
+
+    if (connected.length >= 3) {
+      const newGrid = currentGrid.map(row => [...row]);
+      connected.forEach(([cr, cc]) => { if (cr !== r || cc !== c) newGrid[cr][cc] = 0; });
+      const newVal = val * 2;
+      newGrid[r][c] = newVal;
+      return { grid: newGrid, merged: true, newVal: newVal, count: connected.length };
+    }
+    return { grid: currentGrid, merged: false };
+  };
+
+  const advanceDropZone = () => {
+    const newZone = dropZone.slice(1);
+    setDropZone(newZone);
+    if (newZone.length === 0) {
+      setDropZoneLocked(false);
+      setMaxDropZoneSize(3); // Reset Extra Dart
+    }
+  };
+
+  const addToDropZone = (item) => {
+    if (dropZoneLocked || dropZone.length >= maxDropZoneSize) return;
+    const newZone = [...dropZone, item];
+    setDropZone(newZone);
+    if (newZone.length >= maxDropZoneSize) setDropZoneLocked(true);
+  };
+
+  const handleMiniGridClick = (cell, r, c) => {
+    const isClickable = (typeof cell === 'number' && cell > 0) || LIFELINES_AND_TOOLS.includes(cell) && !['play', 'gameover', 0, -1].includes(cell);
+    if (!isClickable || dropZoneLocked || isAnimating) return;
+    if (dropZone.length >= maxDropZoneSize) return;
+
+    addToDropZone(cell);
+
+    // Track Session & Daddy Hits
+    const newHits = new Set(sessionHits);
+    newHits.add(cell);
+    setSessionHits(newHits);
+
+    if (activeLayoutData) {
+      const pt = getPlayableTiles(activeLayoutData.grid);
+      
+      if (cell === daddyTarget) {
+        setDaddyScore(s => s + 1);
+        setDaddyTarget(pickDaddyTarget(pt));
+      }
+
+      if (!daddyBonusAwarded) {
+        const allHit = pt.every(t => newHits.has(t));
+        if (allHit && pt.length > 0) {
+          setDaddyScore(s => s + 100);
+          setDaddyBonusAwarded(true);
+          setShowDaddyAchievement(true);
+          
+          // Mark permanent layout achievement
+          const newArchive = [...archive];
+          const layoutIndex = newArchive.findIndex(l => l.id === activeLayoutId);
+          if (layoutIndex !== -1) {
+            newArchive[layoutIndex].daddyAchievement = true;
+            setArchive(newArchive);
+          }
+        }
+      }
+    }
+
+    // Track Layout Hit Count
+    const newArchive = [...archive];
+    const layoutIndex = newArchive.findIndex(l => l.id === activeLayoutId);
+    if (layoutIndex !== -1) {
+      const layout = newArchive[layoutIndex];
+      if (!layout.hitCounts) layout.hitCounts = {};
+      const key = `${r}-${c}`;
+      layout.hitCounts[key] = (layout.hitCounts[key] || 0) + 1;
+      setArchive(newArchive);
+    }
+  };
+
+  const finalizeGame = (finalScore, finalGrid, isWin) => {
+    const maxTile = Math.max(...finalGrid.flat().filter(v => typeof v === 'number'), highestTileThisGame);
+    
+    setStats(prev => {
+      const newTiles = [...prev.topTiles, { tile: maxTile, date: new Date().toLocaleDateString() }]
+        .sort((a, b) => b.tile - a.tile).slice(0, 10);
+      const newScores = [...prev.topScores, { score: finalScore, date: new Date().toLocaleDateString() }]
+        .sort((a, b) => b.score - a.score).slice(0, 10);
+      return { topTiles: newTiles, topScores: newScores };
+    });
+
+    if (isWin) setGameWon(true);
+    setGameOver(true);
+  };
+
+  const handlePlayCellClick = async (r, c) => {
+    if (gameOver || dropZone.length === 0 || isAnimating) return;
+    let activeTile = dropZone[0];
+    const isTool = LIFELINES_AND_TOOLS.includes(activeTile) && activeTile !== 0 && activeTile !== -1 && activeTile !== 'play' && activeTile !== 'gameover' && activeTile !== 'miss';
+
+    if (isTool) {
+      let newGrid = grid.map(row => [...row]);
+      
+      if (activeTile === 'lifeline') {
+        if (grid[r][c] === 0) return; 
+        newGrid[r][c] = 0; 
+      } else if (activeTile === 'bomb') {
+        for(let i = -1; i <= 1; i++) {
+          for(let j = -1; j <= 1; j++) {
+            if (r+i >= 0 && r+i < grid.length && c+j >= 0 && c+j < grid[0].length) newGrid[r+i][c+j] = 0;
+          }
+        }
+      } else if (activeTile === 'star') {
+        const targetVal = grid[r][c];
+        if (targetVal === 0 || targetVal === 'miss') return; 
+        for(let i=0; i<grid.length; i++) {
+          for(let j=0; j<grid[0].length; j++) {
+            if (newGrid[i][j] === targetVal) newGrid[i][j] = 0;
+          }
+        }
+      } else if (activeTile === 'bombo') {
+        for(let i=0; i<grid.length; i++) newGrid[i][c] = 0;
+      } else if (activeTile === 'bombrow') {
+        for(let j=0; j<grid[0].length; j++) newGrid[r][j] = 0;
+      } else if (activeTile === 'expandwidth') {
+        newGrid = grid.map(row => [...row, 0]);
+      } else if (activeTile === 'expandlength') {
+        newGrid = [...grid, Array(grid[0].length).fill(0)];
+      } else if (activeTile === 'decreasewidth') {
+        if (grid[0].length <= 3) return; // Min 3 cols
+        newGrid = grid.map(row => row.slice(0, -1));
+      } else if (activeTile === 'decreaselength') {
+        if (grid.length <= 3) return; // Min 3 rows
+        newGrid = grid.slice(0, -1);
+      } else if (activeTile === 'luckywheel') {
+        const pool = [8, 16, 32, 64, 128, 'lifeline', 'bomb', 'randomtile', 'extradart', 'randomqueue'];
+        const newDZ = [...dropZone];
+        newDZ[0] = pool[Math.floor(Math.random() * pool.length)];
+        setDropZone(newDZ);
+        return; 
+      } else if (activeTile === 'danhausen') {
+        setIsCursed(true);
+        setShowDanhausenPopup(true);
+        setTimeout(() => setShowDanhausenPopup(false), 2000);
+        setTimeout(() => setIsCursed(false), 10000);
+      } else if (activeTile === 'darkroom') {
+        setShowDarkRoom(true);
+      } else if (activeTile === 'changelayout') {
+        setSwapLayoutMode(true);
+        setAppMode('archive');
+        advanceDropZone();
+        return;
+      } else if (activeTile === 'extradart') {
+        setMaxDropZoneSize(4);
+        setDropZoneLocked(false); // Unlock so they can add a 4th
+        advanceDropZone();
+        return;
+      } else if (activeTile === 'randomqueue') {
+        const rando = Math.pow(2, Math.floor(Math.random() * 8) + 1);
+        const newDZ = [...dropZone];
+        newDZ[0] = rando;
+        setDropZone(newDZ);
+        return; // Replaced in queue, do not advance
+      } else if (activeTile === 'randomtile') {
+        if (grid[r][c] !== 0) return;
+        const rando = Math.floor(Math.random() * 8) + 1;
+        activeTile = Math.pow(2, rando);
+      } else {
+        setGrid(newGrid);
+        advanceDropZone();
+        return;
+      }
+
+      if (activeTile !== 'randomtile') {
+        setGrid(newGrid);
+        advanceDropZone();
+        if (newGrid.every(row => row.every(cell => cell !== 0))) {
+          finalizeGame(zubiScore, newGrid, false);
+        }
+        return;
+      }
+    }
+
+    if (grid[r][c] !== 0) return;
+
+    setIsAnimating(true);
+    let currentGrid = grid.map(row => [...row]);
+    let currentR = r;
+    let currentC = c;
+
+    currentGrid[currentR][currentC] = activeTile;
+    setGrid([...currentGrid]);
+
+    while (currentR + 1 < currentGrid.length && currentGrid[currentR + 1][currentC] === 0) {
+      await new Promise(res => setTimeout(res, 60)); 
+      currentGrid[currentR][currentC] = 0;
+      currentGrid[currentR + 1][currentC] = activeTile;
+      currentR++;
+      setGrid([...currentGrid]);
+    }
+
+    let hasMerged = typeof activeTile === 'number'; 
+    let pointsGained = 0;
+    let localGameWon = false;
+    let turnMaxTile = typeof activeTile === 'number' ? activeTile : 0;
+
+    while (hasMerged) {
+      const result = checkMerge(currentGrid, currentR, currentC);
+      currentGrid = result.grid;
+      
+      if (result.merged) {
+        pointsGained += (result.newVal) * result.count;
+        turnMaxTile = Math.max(turnMaxTile, result.newVal);
+        if (result.newVal >= ULTIMATE_WIN_TILE) localGameWon = true;
+
+        setGrid([...currentGrid]);
+        await new Promise(res => setTimeout(res, 150)); 
+        
+        while (currentR + 1 < currentGrid.length && currentGrid[currentR + 1][currentC] === 0) {
+          await new Promise(res => setTimeout(res, 60));
+          currentGrid[currentR][currentC] = 0;
+          currentGrid[currentR + 1][currentC] = result.newVal;
+          currentR++;
+          setGrid([...currentGrid]);
+        }
+      } else {
+        hasMerged = false;
+      }
+    }
+
+    const newScore = zubiScore + pointsGained;
+    setGrid([...currentGrid]);
+    setZubiScore(newScore);
+    if (turnMaxTile > highestTileThisGame) setHighestTileThisGame(turnMaxTile);
+
+    advanceDropZone();
+
+    const isFull = currentGrid.every(row => row.every(cell => cell !== 0));
+    if (localGameWon || isFull) {
+      finalizeGame(newScore, currentGrid, localGameWon);
+    }
+    
+    setIsAnimating(false);
+  };
+
+  const resetGame = () => {
+    setGrid(Array(5).fill().map(() => Array(5).fill(0))); 
+    setZubiScore(0);
+    setDaddyScore(0);
+    setHighestTileThisGame(0);
+    setDropZone([]);
+    setMaxDropZoneSize(3);
+    setDropZoneLocked(false);
+    setGameOver(false);
+    setGameWon(false);
+    setIsAnimating(false);
+    setSwapLayoutMode(false);
+    setIsCursed(false);
+    setSessionHits(new Set());
+    setDaddyBonusAwarded(false);
+    if (activeLayoutData) {
+      setDaddyTarget(pickDaddyTarget(getPlayableTiles(activeLayoutData.grid)));
+    }
+  };
+
+  // --- CREATE MODE LOGIC (Touch Swipe Optimized) ---
+  const handleCreateCellClick = (r, c) => {
+    const cellValue = createGrid[r][c];
+    if (createSelectedTile !== cellValue) {
+      if (cellValue === 'play' && createGrid.flat().filter(v => v === 'play').length <= 1) return;
+      if (cellValue === 'gameover' && createGrid.flat().filter(v => v === 'gameover').length <= 1) return;
+    }
+    const newGrid = createGrid.map(row => [...row]);
+    newGrid[r][c] = createSelectedTile;
+    setCreateGrid(newGrid);
+  };
+
+  const handleTouchMoveCreate = (e) => {
+    if (!e.touches.length) return;
+    const touch = e.touches[0];
+    const element = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (element && element.dataset.row && element.dataset.col) {
+      handleCreateCellClick(parseInt(element.dataset.row), parseInt(element.dataset.col));
+    }
+  };
+
+  const exportCanvasScreenshot = () => {
+    const newLayout = {
+      id: Date.now(),
+      name: `Custom Layout ${archive.length + 1}`,
+      grid: createGrid.map(row => [...row]),
+      playCount: 0,
+      hitCounts: {},
+      daddyAchievement: false
+    };
+    setArchive(prev => [newLayout, ...prev]);
+    setScreenshotMode(true);
+  };
+
+  // --- RENDER ---
+  if (screenshotMode) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center py-8 px-4 relative touch-none select-none">
+        <div className="w-full max-w-3xl aspect-[7/10] bg-zinc-900 p-4 sm:p-6 rounded-3xl shadow-2xl border border-zinc-800 mx-auto mb-20">
+          <div className="grid gap-1 sm:gap-2 w-full h-full cursor-default" style={{ gridTemplateColumns: `repeat(${CREATE_COLS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${CREATE_ROWS}, minmax(0, 1fr))` }}>
+            {createGrid.map((row, r) => (
+              row.map((cell, c) => {
+                const styles = getTileStyles(cell);
+                return (
+                  <div key={`ss-${r}-${c}`}
+                    className={`
+                      w-full h-full rounded-md sm:rounded-lg flex items-center justify-center font-black overflow-hidden
+                      ${styles.className}
+                      ${cell !== 0 && cell !== -1 ? 'border-b-[3px] sm:border-b-4' : ''}
+                    `}
+                    style={styles.style}
+                  >
+                    {/* Native Canvas drawing doesn't support our SVG icons, so we map tools to emojis for the screenshot view */}
+                    {['play','gameover','miss','lifeline','bomb','star','darkroom','danhausen','bombo','bombrow','changelayout','expandwidth','expandlength','decreasewidth','decreaselength','randomtile','luckywheel','extradart','randomqueue'].includes(cell) ? (
+                      <span className="text-[clamp(1.5rem,4vw,3rem)]">
+                        {cell === 'play' ? '▶️' : 
+                         cell === 'gameover' ? '💀' : 
+                         cell === 'miss' ? '✕' : 
+                         cell === 'lifeline' ? '🔨' : 
+                         cell === 'bomb' ? '💣' : 
+                         cell === 'star' ? '⭐' : 
+                         cell === 'darkroom' ? '📸' : 
+                         cell === 'danhausen' ? '👻' : 
+                         cell === 'bombo' ? '⬇️' : 
+                         cell === 'bombrow' ? '➡️' : 
+                         cell === 'expandwidth' ? '↔️' :
+                         cell === 'expandlength' ? '↕️' :
+                         cell === 'decreasewidth' ? '><' :
+                         cell === 'decreaselength' ? 'v^' :
+                         cell === 'randomtile' ? '🎲' :
+                         cell === 'luckywheel' ? '🎯' : 
+                         cell === 'extradart' ? '➕' :
+                         cell === 'randomqueue' ? '❓' : '🔄'}
+                      </span>
+                    ) : renderTileContent(cell)}
+                  </div>
+                )
+              })
+            ))}
+          </div>
+        </div>
+        
+        <div className="fixed bottom-6 left-0 w-full flex flex-col items-center gap-4 animate-in slide-in-from-bottom-10 z-50 px-4">
+          <div className="bg-black/90 text-white px-6 py-4 rounded-3xl text-sm sm:text-base font-bold backdrop-blur-md shadow-2xl text-center border border-zinc-700 w-full max-w-md">
+            Take your screenshot now!<br/>
+            <span className="text-zinc-400 text-xs sm:text-sm font-normal">Your grid has already been saved to the Archive.</span>
+          </div>
+          <button 
+            onClick={() => {
+              setScreenshotMode(false);
+              setAppMode('archive');
+            }}
+            className="flex items-center gap-2 bg-blue-600 active:bg-blue-500 text-white px-8 py-5 rounded-full font-black text-xl shadow-xl shadow-blue-900/50 transition-transform active:scale-95 border-2 border-blue-400 w-full max-w-md justify-center"
+          >
+            <Check className="w-8 h-8" /> I'm Done
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-slate-200 font-sans flex flex-col items-center py-4 px-2 sm:px-6 select-none touch-manipulation">
+      
+      {/* DANHAUSEN POPUP */}
+      {showDanhausenPopup && (
+        <div className="fixed inset-0 z-[150] flex flex-col items-center justify-center pointer-events-none bg-black/50">
+          <Ghost className="w-48 h-48 sm:w-64 sm:h-64 text-green-500 animate-bounce mb-4 drop-shadow-[0_0_30px_rgba(34,197,94,1)]" />
+          <h2 className="text-5xl sm:text-7xl md:text-8xl text-green-500 font-black animate-pulse text-center drop-shadow-[0_0_20px_rgba(34,197,94,1)] uppercase tracking-widest">
+            YOU ARE CURSED!
+          </h2>
+        </div>
+      )}
+
+      {/* DARK ROOM MODAL */}
+      {showDarkRoom && (
+        <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center p-6 animate-in fade-in duration-500">
+          <h2 className="text-3xl sm:text-5xl md:text-6xl text-red-600 font-black mb-12 text-center uppercase tracking-widest drop-shadow-[0_0_15px_rgba(220,38,38,0.8)]">
+            You awake to find yourself in a dark room!!
+          </h2>
+          <div className="flex flex-col gap-4 w-full max-w-2xl">
+            {['a) play dartmerge', 'b) play dartsPurge', 'c) play fartsMerge', 'd) hey marks'].map((opt) => (
+              <button 
+                key={opt} 
+                onClick={() => setShowDarkRoom(false)} 
+                className="bg-zinc-900 text-slate-300 p-6 sm:p-8 text-xl sm:text-2xl font-bold rounded-2xl active:bg-zinc-800 active:text-white border border-zinc-800 active:border-zinc-600 transition-all text-left shadow-lg active:scale-[0.98]"
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* DADDY ACHIEVEMENT OVERLAY */}
+      {showDaddyAchievement && (
+        <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col items-center justify-center p-4 animate-in fade-in zoom-in duration-500">
+           <Crown className="w-40 h-40 sm:w-56 sm:h-56 text-yellow-400 mb-6 animate-pulse drop-shadow-[0_0_20px_rgba(250,204,21,0.5)]" />
+           <h2 className="text-5xl sm:text-6xl md:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-yellow-600 mb-4 text-center leading-none">DADDY<br/>ACHIEVEMENT!</h2>
+           <p className="text-xl sm:text-3xl text-yellow-200 mb-4 text-center max-w-2xl font-bold">You hit every single playable tile in this layout!</p>
+           <div className="bg-yellow-900/50 border border-yellow-500 text-yellow-400 px-6 py-3 rounded-2xl font-black text-2xl mb-10 shadow-lg">+100 Daddy Points!</div>
+           <button onClick={() => setShowDaddyAchievement(false)} className="bg-yellow-500 text-black px-10 py-5 rounded-full font-black text-2xl sm:text-3xl active:scale-95 transition-transform shadow-[0_0_40px_rgba(234,179,8,0.5)]">
+             Continue Playing
+           </button>
+        </div>
+      )}
+
+      {/* HEADER & TOP NAV */}
+      <div className="w-full max-w-7xl flex flex-col items-center mb-6 gap-4 border-b border-zinc-800 pb-4 shrink-0">
+        <div className="text-center w-full">
+          <h1 className="text-3xl sm:text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-red-500 to-green-500 uppercase tracking-wider leading-tight">
+            Zubi and Daddy DartsMerge
+          </h1>
+          <p className="text-slate-400 text-sm sm:text-lg md:text-xl mt-2 font-medium tracking-wide">
+            18:30, (most) Wednesdays, Thursdays and Sundays
+          </p>
+        </div>
+        
+        <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-4 bg-zinc-900 p-2 rounded-2xl border border-zinc-800 mt-2 w-full sm:w-auto">
+          {[
+            { id: 'play', icon: Play, label: 'Play Zone' },
+            { id: 'create', icon: Settings, label: 'Create' },
+            { id: 'archive', icon: ArchiveIcon, label: 'Archive' },
+            { id: 'stats', icon: BarChart2, label: 'Stats' },
+          ].map(tab => (
+            <button 
+              key={tab.id} onClick={() => {
+                if (swapLayoutMode && tab.id !== 'archive') setSwapLayoutMode(false);
+                setAppMode(tab.id);
+              }}
+              className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 sm:px-6 py-3 sm:py-4 rounded-xl font-black text-sm sm:text-lg transition-all active:scale-95 ${appMode === tab.id ? 'bg-zinc-800 text-white shadow-md border-b-2 border-zinc-600' : 'text-zinc-500 active:text-zinc-300 bg-zinc-950/50'}`}
+            >
+              <tab.icon className="w-5 h-5 sm:w-6 sm:h-6" /> <span className="hidden sm:inline">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ======================= PLAY MODE ======================= */}
+      {appMode === 'play' && (
+        <div className="w-full max-w-7xl flex flex-col lg:flex-row gap-6 sm:gap-8 justify-center items-stretch animate-in fade-in duration-300 flex-1">
+          
+          {/* Left Sidebar: Active Board */}
+          <div className="w-full lg:w-72 xl:w-80 bg-zinc-900 p-4 sm:p-6 rounded-3xl shadow-2xl border border-zinc-800 flex flex-col gap-4 shrink-0">
+            <h2 className="text-sm sm:text-base font-bold text-slate-400 uppercase tracking-widest text-center border-b border-zinc-800 pb-3">
+              Active Layout
+            </h2>
+            
+            {!activeLayoutData ? (
+              <div className="text-sm sm:text-base text-zinc-500 text-center py-10 leading-relaxed bg-zinc-950 rounded-2xl border border-dashed border-zinc-800 px-4 flex-1 flex items-center justify-center">
+                <span>No board loaded.<br/><br/>Go to <strong>Archive</strong> to select one!</span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4 h-full">
+                <div className="text-center font-black text-white bg-zinc-800 p-3 sm:p-4 rounded-xl truncate flex flex-col items-center justify-center gap-2 text-lg sm:text-xl">
+                  <div className="flex items-center gap-2">
+                    {activeLayoutData.daddyAchievement && <Crown className="w-5 h-5 sm:w-6 sm:h-6 text-yellow-500 flex-shrink-0" />}
+                    {activeLayoutData.name}
+                  </div>
+                  
+                  {/* Daddy Challenge Indicator */}
+                  {daddyTarget && (
+                    <div className="bg-yellow-900/40 border border-yellow-500/50 rounded-lg p-2 mt-2 w-full flex items-center justify-between shadow-inner">
+                      <span className="text-[10px] sm:text-xs text-yellow-400 font-bold uppercase tracking-wider">Daddy Target:</span>
+                      <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-md flex items-center justify-center font-black ${getTileStyles(daddyTarget).className}`} style={getTileStyles(daddyTarget).style}>
+                        {renderTileContent(daddyTarget)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs sm:text-sm text-slate-400 leading-tight text-center uppercase tracking-wider font-bold">
+                  Tap tiles to queue them
+                </div>
+                
+                <div className="bg-zinc-950 p-2 sm:p-4 rounded-2xl shadow-inner border border-zinc-800 w-full max-w-[300px] lg:max-w-full mx-auto aspect-[7/10] mt-auto">
+                  <div className="grid gap-[2px] sm:gap-1 w-full h-full" style={{ gridTemplateColumns: `repeat(${CREATE_COLS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${CREATE_ROWS}, minmax(0, 1fr))` }}>
+                    {activeLayoutData.grid.map((row, r) => (
+                      row.map((cell, c) => {
+                        const isClickable = (typeof cell === 'number' && cell > 0) || LIFELINES_AND_TOOLS.includes(cell) && !['play', 'gameover', 0, -1].includes(cell);
+                        const styles = getTileStyles(cell);
+                        const hits = activeLayoutData.hitCounts?.[`${r}-${c}`] || 0;
+                        
+                        return (
+                          <div
+                            key={`mini-${r}-${c}`}
+                            onClick={() => handleMiniGridClick(cell, r, c)}
+                            className={`
+                              relative w-full h-full rounded sm:rounded-md flex items-center justify-center font-black transition-transform overflow-hidden
+                              ${styles.className}
+                              ${isClickable && !dropZoneLocked && !isAnimating ? 'active:scale-90 active:z-10 shadow-sm cursor-pointer' : 'opacity-80'}
+                              ${(dropZoneLocked || isAnimating) && isClickable ? 'grayscale opacity-50 cursor-not-allowed' : ''}
+                            `}
+                            style={styles.style}
+                          >
+                            {renderTileContent(cell)}
+                            {hits > 0 && (
+                              <div className="absolute top-0 right-0 bg-black/90 text-white text-[8px] sm:text-[10px] px-1 py-0.5 rounded-bl-md z-20 font-bold pointer-events-none shadow-sm">
+                                {hits}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Center: Play Board & Drop Zone */}
+          <div className="flex-1 w-full flex flex-col items-center gap-4 sm:gap-6 min-w-0">
+            {/* Drop Zone */}
+            <div className="w-full bg-zinc-900 p-4 sm:p-6 rounded-3xl border border-zinc-800 shadow-xl flex flex-col items-center max-w-2xl mx-auto">
+              <div className="text-sm sm:text-base font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-3">
+                Drop Zone Queue
+                {dropZoneLocked ? <span className="text-red-500 bg-red-950/50 px-3 py-1 rounded-lg animate-pulse border border-red-900">LOCKED</span> : <span className="text-blue-500 bg-blue-950/30 px-3 py-1 rounded-lg">({dropZone.length}/{maxDropZoneSize})</span>}
+              </div>
+              
+              <div className={`grid gap-4 sm:gap-6 w-full ${maxDropZoneSize === 4 ? 'grid-cols-4' : 'grid-cols-3 max-w-md'}`}>
+                {Array.from({ length: maxDropZoneSize }).map((_, i) => {
+                  const item = dropZone[i];
+                  const isActive = i === 0 && item !== undefined;
+                  const styles = item ? getTileStyles(item) : {};
+                  return (
+                    <div key={`dz-${i}`} 
+                      className={`
+                        w-full aspect-square rounded-2xl flex items-center justify-center font-black transition-all duration-300 overflow-hidden shadow-lg
+                        ${!item ? 'bg-zinc-950 border-4 border-dashed border-zinc-800 shadow-inner' : styles.className}
+                        ${isActive ? 'ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-900 scale-105 shadow-2xl shadow-blue-900/50 z-10 border-b-[6px]' : ''}
+                        ${item && !isActive ? 'scale-90 opacity-70 border-b-[4px]' : ''}
+                      `}
+                      style={styles.style}
+                    >
+                        {item ? renderTileContent(item) : ''}
+                    </div>
+                  );
+                })}
+              </div>
+              
+              {/* Dynamic Action Description */}
+              <div className="mt-4 sm:mt-6 bg-zinc-950 border border-zinc-800 p-4 rounded-xl w-full text-center min-h-[5rem] flex flex-col justify-center">
+                {dropZone[0] && TOOL_INFO[dropZone[0]] ? (
+                  <>
+                    <span className="text-sm sm:text-base font-black text-blue-400 block mb-1 uppercase tracking-widest">{TOOL_INFO[dropZone[0]].name}</span>
+                    <span className="text-xs sm:text-sm text-slate-400 leading-snug block">{TOOL_INFO[dropZone[0]].desc}</span>
+                  </>
+                ) : (
+                  <span className="text-xs sm:text-sm text-zinc-600 font-bold uppercase tracking-widest">Select a tile to begin</span>
+                )}
+              </div>
+            </div>
+
+            {/* The Fluid Game Board */}
+            <div className="w-full max-w-3xl aspect-square bg-zinc-900 p-3 sm:p-5 rounded-[2rem] shadow-2xl border border-zinc-800 flex justify-center items-center overflow-hidden">
+              <div 
+                className={`grid gap-1.5 sm:gap-2.5 w-full h-full ${isAnimating ? 'cursor-not-allowed' : LIFELINES_AND_TOOLS.includes(dropZone[0]) ? 'cursor-crosshair' : dropZone.length > 0 ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                style={{ 
+                  gridTemplateColumns: `repeat(${grid[0]?.length || 5}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${grid.length || 5}, minmax(0, 1fr))`
+                }}
+              >
+                {grid.map((row, r) => (
+                  row.map((cell, c) => {
+                    const styles = getTileStyles(cell);
+                    return (
+                      <div key={`${r}-${c}`} onTouchStart={(e) => { e.preventDefault(); handlePlayCellClick(r, c); }} onClick={() => handlePlayCellClick(r, c)}
+                        className={`
+                          w-full h-full rounded-xl sm:rounded-2xl flex items-center justify-center font-black transition-all duration-200 overflow-hidden
+                          ${styles.className}
+                          ${cell !== 0 ? 'border-b-4 sm:border-b-[6px] shadow-lg scale-100' : 'scale-95 shadow-inner'}
+                          ${cell === 0 && dropZone.length > 0 && !isAnimating && !LIFELINES_AND_TOOLS.includes(dropZone[0]) ? 'active:bg-gray-700 active:ring-2 active:ring-white/20' : ''}
+                          ${!isAnimating && LIFELINES_AND_TOOLS.includes(dropZone[0]) && cell !== 0 && cell !== 'miss' ? 'active:scale-95 shadow-[0_0_20px_rgba(255,255,255,0.8)] ring-4 ring-white' : ''}
+                        `}
+                        style={styles.style}
+                      >
+                        {renderTileContent(cell)}
+                      </div>
+                    )
+                  })
+                ))}
+              </div>
+
+              {gameOver && (
+                <div className="absolute inset-0 bg-black/90 backdrop-blur-md rounded-[2rem] flex flex-col items-center justify-center p-8 text-center animate-in fade-in zoom-in duration-300 z-50">
+                  {gameWon ? (
+                    <>
+                      <Trophy className="w-24 h-24 sm:w-32 sm:h-32 text-yellow-500 mb-6 animate-bounce drop-shadow-[0_0_20px_rgba(234,179,8,0.6)]" />
+                      <h2 className="text-5xl sm:text-7xl font-black text-white mb-4">ULTIMATE WIN!</h2>
+                      <p className="text-2xl sm:text-4xl text-yellow-400 mb-8 font-bold">You reached 1,099,511,627,776!</p>
+                    </>
+                  ) : (
+                    <>
+                      <Trophy className="w-24 h-24 sm:w-32 sm:h-32 text-zinc-500 mb-6 drop-shadow-xl" />
+                      <h2 className="text-5xl sm:text-7xl font-black text-white mb-4">Game Over!</h2>
+                    </>
+                  )}
+                  <p className="text-2xl sm:text-4xl text-slate-300 mb-8">Zubi's Final Score: <strong className="text-white bg-zinc-800 px-4 py-2 rounded-xl border border-zinc-700">{zubiScore.toLocaleString()}</strong></p>
+                  <button onClick={resetGame} className="mt-4 flex items-center gap-3 bg-gradient-to-r from-red-600 to-green-600 text-white px-10 py-5 rounded-full font-black text-2xl active:scale-95 transition-transform shadow-2xl">
+                    <RotateCcw className="w-8 h-8" /> Play Again
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right Sidebar: Split Stats */}
+          <div className="w-full lg:w-64 xl:w-72 flex flex-row lg:flex-col gap-4 sm:gap-6 shrink-0">
+            
+            <div className="bg-zinc-900 p-4 sm:p-6 rounded-3xl border border-zinc-800 text-center shadow-xl flex-1 lg:flex-none flex flex-col justify-center">
+              <h3 className="text-xs sm:text-sm font-bold text-slate-500 uppercase tracking-widest mb-1 sm:mb-2">Zubi's Score</h3>
+              <div className="text-2xl sm:text-3xl xl:text-4xl font-black text-blue-400 break-words leading-tight">{zubiScore.toLocaleString()}</div>
+            </div>
+
+            <div className="bg-zinc-900 p-4 sm:p-6 rounded-3xl border border-zinc-800 text-center shadow-xl flex-1 lg:flex-none flex flex-col justify-center">
+              <h3 className="text-xs sm:text-sm font-bold text-slate-500 uppercase tracking-widest mb-1 sm:mb-2">Daddy's Score</h3>
+              <div className="text-2xl sm:text-3xl xl:text-4xl font-black text-yellow-500 break-words leading-tight">{daddyScore.toLocaleString()}</div>
+            </div>
+
+            <button disabled={isAnimating} onClick={resetGame} className="flex-1 lg:flex-none w-full bg-zinc-900 active:bg-zinc-800 text-slate-400 p-4 sm:p-6 rounded-3xl border border-zinc-800 flex justify-center items-center gap-3 transition-colors font-black text-sm sm:text-lg uppercase tracking-wider disabled:opacity-50 shadow-xl active:scale-[0.98]">
+              <RotateCcw className="w-5 h-5 sm:w-6 sm:h-6" /> <span className="hidden sm:inline">Restart</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ======================= CREATE MODE ======================= */}
+      {appMode === 'create' && (
+        <div className="w-full max-w-7xl flex flex-col lg:flex-row gap-6 sm:gap-8 justify-center items-stretch animate-in fade-in duration-300 flex-1">
+          
+          <div className="w-full lg:w-80 xl:w-96 bg-zinc-900 p-4 sm:p-6 rounded-3xl shadow-2xl border border-zinc-800 flex flex-col gap-6 lg:max-h-[85vh] overflow-y-auto shrink-0 touch-pan-y">
+            
+            {(TOOL_INFO[createSelectedTile] || typeof createSelectedTile === 'number') && (
+              <div className="bg-zinc-950 p-4 rounded-2xl border border-zinc-800 text-center shrink-0">
+                <span className="text-sm sm:text-base font-black text-blue-400 block mb-1 uppercase tracking-widest">
+                  {typeof createSelectedTile === 'number' && createSelectedTile > 0 ? `Number Tile` : TOOL_INFO[createSelectedTile].name}
+                </span>
+                <span className="text-xs sm:text-sm text-slate-400 leading-snug block">
+                  {typeof createSelectedTile === 'number' && createSelectedTile > 0 ? `A playable number tile.` : TOOL_INFO[createSelectedTile].desc}
+                </span>
+              </div>
+            )}
+
+            <div>
+              <div className="sticky top-0 bg-zinc-900 z-10 pb-3 mb-3 border-b border-zinc-800">
+                <h2 className="text-sm sm:text-base font-bold text-slate-400 uppercase tracking-widest text-center">Tools & Lifelines</h2>
+              </div>
+              <div className="grid grid-cols-4 gap-2 sm:gap-3">
+                {LIFELINES_AND_TOOLS.map((val) => {
+                  const styles = getTileStyles(val);
+                  return (
+                    <button key={val} onClick={() => setCreateSelectedTile(val)} title={TOOL_INFO[val]?.name}
+                      className={`
+                        relative w-full aspect-square rounded-xl flex items-center justify-center font-black transition-transform overflow-hidden
+                        ${val === -1 ? 'bg-zinc-950 border border-dashed border-zinc-700 text-zinc-600' : styles.className}
+                        ${val !== -1 && val !== 0 ? 'border-b-[3px] sm:border-b-4' : ''}
+                        ${createSelectedTile === val ? 'ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-900 scale-105 z-10' : 'active:scale-95'}
+                      `}
+                      style={styles.style}
+                    >
+                      {val === -1 ? <Eraser className="w-6 h-6" /> : val === 0 ? <Square className="w-6 h-6 opacity-20" /> : renderTileContent(val)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="sticky top-0 bg-zinc-900 z-10 pb-3 mb-3 border-b border-zinc-800">
+                <h2 className="text-sm sm:text-base font-bold text-slate-400 uppercase tracking-widest text-center">Numbers</h2>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 sm:gap-3">
+                {CREATE_POWERS_OF_TWO.map((val) => {
+                  const styles = getTileStyles(val);
+                  return (
+                    <button key={val} onClick={() => setCreateSelectedTile(val)}
+                      className={`
+                        relative w-full aspect-square rounded-lg sm:rounded-xl flex items-center justify-center font-black transition-transform border-b-[3px] sm:border-b-4 overflow-hidden
+                        ${styles.className}
+                        ${createSelectedTile === val ? 'ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-900 scale-110 z-10' : 'active:scale-95'}
+                      `}
+                      style={styles.style}
+                    >
+                      {renderTileContent(val)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          <div className="flex-1 w-full flex flex-col items-center gap-6 min-w-0">
+            <div className="w-full max-w-3xl aspect-[7/10] bg-zinc-900 p-4 sm:p-6 rounded-[2rem] shadow-2xl border border-zinc-800 flex justify-center items-center overflow-hidden touch-none">
+              <div 
+                className="grid gap-1 sm:gap-2 w-full h-full cursor-pointer select-none touch-none" 
+                style={{ gridTemplateColumns: `repeat(${CREATE_COLS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${CREATE_ROWS}, minmax(0, 1fr))` }}
+                onTouchMove={handleTouchMoveCreate}
+              >
+                {createGrid.map((row, r) => (
+                  row.map((cell, c) => {
+                    const styles = getTileStyles(cell);
+                    return (
+                      <div key={`${r}-${c}`} data-row={r} data-col={c}
+                        onMouseDown={() => handleCreateCellClick(r, c)} onMouseEnter={(e) => { if (e.buttons === 1) handleCreateCellClick(r, c); }}
+                        onTouchStart={(e) => { e.preventDefault(); handleCreateCellClick(r, c); }}
+                        className={`
+                          w-full h-full rounded-md sm:rounded-xl flex items-center justify-center font-black transition-colors overflow-hidden
+                          ${styles.className}
+                          ${cell !== 0 && cell !== -1 ? 'border-b-[3px] sm:border-b-[5px]' : ''}
+                          ${cell === -1 ? 'outline outline-2 outline-zinc-800/50' : ''}
+                        `}
+                        style={styles.style}
+                      >
+                        {renderTileContent(cell)}
+                      </div>
+                    )
+                  })
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full lg:w-64 xl:w-72 flex flex-col gap-4 sm:gap-6 shrink-0">
+            <div className="bg-zinc-900 p-4 sm:p-6 rounded-3xl border border-zinc-800 shadow-xl flex flex-col justify-center h-full lg:h-auto">
+              <h3 className="text-sm sm:text-base font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-zinc-800 pb-3 text-center">Export & Save</h3>
+              
+              <button onClick={exportCanvasScreenshot}
+                className="w-full flex items-center justify-center gap-3 py-4 sm:py-5 px-4 rounded-2xl font-black text-lg transition-transform active:scale-95 bg-blue-600 text-white shadow-xl shadow-blue-900/30 border-2 border-blue-500"
+              >
+                <Camera className="w-6 h-6" /> Save Board
+              </button>
+              <p className="text-xs sm:text-sm text-slate-400 mt-4 leading-relaxed text-center">Saves to Archive and isolates the grid for a clean screenshot.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================= ARCHIVE MODE ======================= */}
+      {appMode === 'archive' && (
+        <div className="w-full max-w-7xl animate-in fade-in duration-300 flex-1 flex flex-col">
+          
+          {swapLayoutMode && (
+            <div className="bg-orange-950/80 border-2 border-orange-500 text-orange-200 p-6 rounded-3xl mb-8 flex flex-col sm:flex-row justify-between items-center shadow-2xl gap-4">
+              <div className="text-center sm:text-left">
+                <h3 className="font-black text-2xl sm:text-3xl text-orange-400 mb-2 uppercase tracking-wide">Layout Swap Active!</h3>
+                <p className="text-sm sm:text-base font-medium text-orange-200/80">Select a new layout below to instantly drop it into your current game.</p>
+              </div>
+              <button onClick={() => { setSwapLayoutMode(false); setAppMode('play'); }} className="bg-orange-600 active:bg-orange-500 text-white px-8 py-4 rounded-xl font-black text-lg transition-transform active:scale-95 w-full sm:w-auto shadow-xl">
+                Cancel Swap
+              </button>
+            </div>
+          )}
+
+          <div className="bg-zinc-900 p-6 sm:p-10 rounded-[2.5rem] border border-zinc-800 shadow-2xl flex-1">
+            <h2 className="text-3xl sm:text-4xl font-black mb-8 flex items-center gap-3 border-b border-zinc-800 pb-6">
+              <ArchiveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-blue-500" /> Board Archive
+            </h2>
+            
+            {archive.length === 0 ? (
+              <div className="text-center py-20 text-slate-400 bg-zinc-950 rounded-3xl border-2 border-dashed border-zinc-800 text-lg sm:text-xl font-medium">
+                You haven't designed any boards yet.<br/><br/>Head to <strong>Create</strong> to make one!
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 sm:gap-8">
+                {archive.map((layout, index) => (
+                  <div key={layout.id} className="relative bg-zinc-950 p-6 rounded-3xl border border-zinc-800 shadow-xl flex flex-col group">
+                    
+                    {layout.daddyAchievement && (
+                      <div className="absolute -top-4 -right-4 bg-gradient-to-br from-yellow-400 to-yellow-600 text-black text-xs sm:text-sm font-black px-4 py-2 rounded-full flex items-center gap-2 shadow-xl z-10 border-4 border-zinc-900">
+                        <Crown className="w-4 h-4 sm:w-5 sm:h-5" /> DADDY
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center mb-6 bg-zinc-900 p-3 rounded-xl border border-zinc-800">
+                      <input 
+                        type="text" 
+                        value={layout.name}
+                        onChange={(e) => {
+                          const newArchive = [...archive];
+                          newArchive[index].name = e.target.value;
+                          setArchive(newArchive);
+                        }}
+                        className="bg-transparent text-white font-black text-xl sm:text-2xl border-none outline-none w-full mr-2 truncate"
+                      />
+                      <Edit2 className="w-5 h-5 text-zinc-500 shrink-0" />
+                    </div>
+                    
+                    <div className="w-full aspect-[7/10] bg-zinc-900 p-3 sm:p-4 rounded-2xl mb-6 pointer-events-none shadow-inner border border-zinc-800">
+                      <div className="grid gap-[2px] w-full h-full" style={{ gridTemplateColumns: `repeat(${CREATE_COLS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${CREATE_ROWS}, minmax(0, 1fr))` }}>
+                        {layout.grid.map((row, r) => row.map((cell, c) => {
+                          const styles = getTileStyles(cell);
+                          return <div key={`p-${r}-${c}`} className={`rounded-[3px] sm:rounded-md ${styles.className}`} style={styles.style} />
+                        }))}
+                      </div>
+                    </div>
+
+                    <div className="text-sm sm:text-base text-zinc-500 mb-6 text-center font-bold">Played <strong className="text-white text-lg">{layout.playCount || 0}</strong> times</div>
+                    
+                    <button 
+                      onClick={() => {
+                        const newArchive = [...archive];
+                        newArchive[index].playCount = (newArchive[index].playCount || 0) + 1;
+                        setArchive(newArchive);
+                        setActiveLayoutId(layout.id);
+                        
+                        if (swapLayoutMode) {
+                          setSwapLayoutMode(false);
+                          setAppMode('play');
+                        } else {
+                          setAppMode('play');
+                          resetGame();
+                        }
+                      }}
+                      className={`
+                        mt-auto w-full flex items-center justify-center gap-3 py-4 sm:py-5 px-4 rounded-2xl font-black text-lg sm:text-xl transition-transform active:scale-95 shadow-lg
+                        ${swapLayoutMode 
+                          ? 'bg-orange-600 text-white border-b-4 border-orange-800'
+                          : 'bg-green-600 text-white border-b-4 border-green-800'}
+                      `}
+                    >
+                      {swapLayoutMode ? <ArrowRightLeft className="w-6 h-6" /> : <Play className="w-6 h-6" />}
+                      {swapLayoutMode ? "Swap Into Game" : "Send to Play Zone"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ======================= STATS MODE ======================= */}
+      {appMode === 'stats' && (
+        <div className="w-full max-w-6xl animate-in fade-in duration-300 flex-1 flex flex-col">
+          <div className="bg-zinc-900 p-6 sm:p-10 rounded-[2.5rem] border border-zinc-800 shadow-2xl flex-1">
+            <h2 className="text-3xl sm:text-4xl font-black mb-10 flex items-center gap-3 border-b border-zinc-800 pb-6">
+              <BarChart2 className="w-8 h-8 sm:w-10 sm:h-10 text-yellow-500" /> Hall of Fame
+            </h2>
+            
+            <div className="grid lg:grid-cols-2 gap-8 sm:gap-12">
+              <div className="bg-zinc-950 p-6 sm:p-8 rounded-3xl border border-zinc-800 shadow-xl">
+                <h3 className="text-xl sm:text-2xl font-black text-white mb-6 flex items-center gap-3 border-b border-zinc-800 pb-4">
+                  <Square className="w-6 h-6 sm:w-8 sm:h-8 text-blue-500" /> Highest Tiles Achieved
+                </h3>
+                {stats.topTiles.length === 0 ? (
+                   <p className="text-zinc-500 text-base sm:text-lg font-medium text-center py-10">No tiles recorded yet. Play a game!</p>
+                ) : (
+                  <ul className="space-y-3 sm:space-y-4">
+                    {stats.topTiles.map((item, idx) => (
+                      <li key={idx} className="bg-zinc-900 p-4 sm:p-5 rounded-2xl border border-zinc-800 flex justify-between items-center shadow-md">
+                        <span className="flex items-center gap-4 sm:gap-6">
+                          <span className="text-zinc-600 font-black text-lg sm:text-xl w-6">{idx + 1}.</span>
+                          <span className="text-2xl sm:text-3xl font-black text-blue-400 drop-shadow-md">{item.tile.toLocaleString()}</span>
+                        </span>
+                        <span className="text-sm sm:text-base text-zinc-500 font-bold bg-zinc-950 px-3 py-1 rounded-lg">{item.date}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="bg-zinc-950 p-6 sm:p-8 rounded-3xl border border-zinc-800 shadow-xl">
+                <h3 className="text-xl sm:text-2xl font-black text-white mb-6 flex items-center gap-3 border-b border-zinc-800 pb-4">
+                  <Trophy className="w-6 h-6 sm:w-8 sm:h-8 text-green-500" /> Highest Scores
+                </h3>
+                {stats.topScores.length === 0 ? (
+                   <p className="text-zinc-500 text-base sm:text-lg font-medium text-center py-10">No scores recorded yet. Play a game!</p>
+                ) : (
+                  <ul className="space-y-3 sm:space-y-4">
+                    {stats.topScores.map((item, idx) => (
+                      <li key={idx} className="bg-zinc-900 p-4 sm:p-5 rounded-2xl border border-zinc-800 flex justify-between items-center shadow-md">
+                        <span className="flex items-center gap-4 sm:gap-6">
+                          <span className="text-zinc-600 font-black text-lg sm:text-xl w-6">{idx + 1}.</span>
+                          <span className="text-2xl sm:text-3xl font-black text-green-400 drop-shadow-md">{item.score.toLocaleString()}</span>
+                        </span>
+                        <span className="text-sm sm:text-base text-zinc-500 font-bold bg-zinc-950 px-3 py-1 rounded-lg">{item.date}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+
+
+
+
